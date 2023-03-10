@@ -1,20 +1,17 @@
 # VQLite - Simple and Lightweight Vector Search Engine
 
-VQLite 是一个轻量简单的向量搜索引擎。VQLite 提供了一套简单的 RESTful API 用来构建向量搜索服务。
+[中文点这里](README_zh-CN.md)
 
-我们写这个项目的原因是我们觉得目前市面上的向量检索引擎都太重了，而且都不太适合我们内部的需求。
+VQLite is a lightweight and simple vector search engine. VQLite provides a simple RESTful API for building vector search services.
 
-目前常见的向量检索引擎（比如 Milvus, Qdrant, Vearch），都是以 vector 维度来管理的，操作的对象都是 vector。与之不同的是，VQLite
-在处理数据上是按照 document 为维度处理的。因为在我们的使用中发现很多时候 document 和 vector 不是一对一的关系而是一对多，
-也就是说一个 document 可能会有很多的向量，如果按照 vector 来管理数据的话就会很麻烦，而且在存储多份 metadata 上也会造成资源的浪费。所以
-VQLite 的设计是一个 document 可以有很多的 vector，同时 document 还可以存储 metadata，基础信息都可以存进来不需要借助另外的存储（mysql
-redis 之类的）。
+We developed this project because we felt that the existing vector retrieval engines on the market were too heavy and not suitable for our internal needs.
 
-当然，最重要的是检索速度，所以我们的底层用了 Google
-的 [ScaNN](https://github.com/google-research/google-research/tree/master/scann)  ，因为它截止到目前为止可能是公开的**最快的
-**检索引擎。~~其实我们就是对 ScaNN 的一个的封装~~
+Commonly used vector retrieval engines (such as Milvus, Qdrant, Vearch) are managed by vector dimensions and operate on vectors. In contrast, VQLite processes data based on documents as dimensions. We found that in many cases, there is not a one-to-one relationship between documents and vectors but rather a one-to-many relationship where a document may have multiple vectors. Managing data based solely on vectors can be cumbersome and result in wasted resources when storing multiple metadata copies. Therefore, VQLite's design allows for multiple vectors per document while also allowing storage of metadata without relying on additional storage solutions such as MySQL or Redis.
 
-下图来自 ScaNN
+Of course, the most important aspect is retrieval speed; therefore, we use Google's [ScaNN](https://github.com/google-research/google-research/tree/master/scann) at the core of our system since it may currently be the fastest public retrieval engine available.
+~~ In fact, we simply encapsulate ScaNN ~~
+
+The following image comes from ScaNN.
 
 ![bench](https://github.com/google-research/google-research/raw/master/scann/docs/glove_bench.png)
 
@@ -26,7 +23,8 @@ redis 之类的）。
 
 # Benchmark
 
-我们使用 1300 万的向量在 AWS 的机器上建库，下面是测试的结果
+
+We used 13 million vectors to build the database on AWS machines. Below are the test results.
 
 | machine     | QPS  | params(nprobe, reorder, topK) |
 |-------------|------|-------------------------------|
@@ -41,9 +39,9 @@ redis 之类的）。
 
 # Get Started
 
-我们提供两种使用方式从源码编译和Docker
+We provide two ways of usage: compiling from source code and using Docker.
 
-## 从源码编译
+## Compile from source code
 
 ```bash
 git clone --recurse-submodules https://github.com/VQLite/VQLite.git
@@ -59,7 +57,7 @@ go build cmd/vqlite.go
 ## Docker
 
 ```bash 
-首先复制一下 vqlite.yaml 到你的机器上并做合适的修改
+First, copy the vqlite.yaml to your machine and make appropriate modifications.
 
 docker pull vqlite/vqlite
 
@@ -69,11 +67,12 @@ docker run --restart=always -d --name vqlite -p 8880:8880 \
     vqlite
 ```
 
-## 调用示例
+## Example of use
 
-可以查看 python_sdk 目录，有示例代码。
+You can check the python_sdk directory for sample code.
 
 # Tips
 
-尽量让一个 Segment 尽可能的大，贴着内存的上限设置，尽量减少 Segment 的数量，这样可以提高检索速度。
-Segment 的数量越多，速度就会越慢。
+Try to make each segment as large as possible, set it close to the memory limit, and minimize the number of segments. This can improve search speed.
+
+The more segments there are, the slower the speed will be.
