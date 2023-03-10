@@ -1,0 +1,4 @@
+requests
+tenacity
+json
+numpy

@@ -1,0 +1,3 @@
+[submodule "vqindex"]
+	path = vqindex
+	url = https://github.com/VQLite/vqindex.git

@@ -1,0 +1,6 @@
+serviceConfig:
+  host: 0.0.0.0
+  port: 8880
+  runMode: debug
+  dataPath: ./vqlite_data
+  segmentVectorMaxSize: 10000000

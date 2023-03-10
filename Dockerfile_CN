@@ -1,0 +1,36 @@
+# BUILDER
+FROM golang:1.19-buster as builder
+# install
+RUN echo "deb http://apt.llvm.org/buster/ llvm-toolchain-buster-11 main" | tee /etc/apt/sources.list.d/llvm.list
+RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+RUN apt update && apt install -y clang-11 python3 python3-pip
+RUN python3 -m pip install -U pip -i https://pypi.douban.com/simple/
+RUN ln -s /usr/bin/clang-11 /usr/bin/clang
+
+
+WORKDIR /src/vqlite
+COPY . .
+
+WORKDIR /src/vqlite/vqindex
+ENV https_proxy "http://127.0.0.1:1081"
+ENV http_proxy "http://127.0.0.1:1081"
+ENV all_proxy "socks5://127.0.0.1:1080"
+RUN bash build.sh vqindex_api
+RUN cp libs/*so* /usr/lib
+RUN ln -s  /usr/lib/libtensorflow_framework.so.2 /usr/lib/libtensorflow_framework.so
+
+WORKDIR /src/vqlite
+ENV http_proxy ""
+ENV https_proxy ""
+ENV all_proxy ""
+ENV GO111MODULE on
+ENV GOPROXY https://goproxy.cn
+RUN go build -o /go/bin/vqlite cmd/vqlite.go
+
+
+# OUTPUT
+FROM debian:buster-slim
+WORKDIR /app
+COPY --from=BUILDER /usr/lib /usr/lib
+COPY --from=BUILDER /go/bin/vqlite /app/vqlite
+ENTRYPOINT ["/app/vqlite"]
