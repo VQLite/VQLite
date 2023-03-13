@@ -2,16 +2,15 @@
 
 [中文点这里](README_zh-CN.md)
 
-VQLite is a lightweight and simple vector search engine. VQLite provides a simple RESTful API for building vector search services.
-
+VQLite is a lightweight and simple vector similarity search engine. VQLite provides a simple RESTful API for building vector similarity search services.
 
 The reason we are creating this project is that there is currently no solution that meets our needs (as described in the following paragraph), and we feel that the vector search engines available on the market are too heavy, often requiring a Kubernetes cluster with multiple replicas. This can be a waste of resources and a burden for many projects.
 
-Commonly used vector retrieval engines (such as Milvus, Qdrant, Vearch) are managed by vector dimensions and operate on vectors. In contrast, VQLite processes data based on documents as dimensions. We found that in many cases, there is not a one-to-one relationship between documents and vectors but rather a one-to-many relationship where a document may have multiple vectors. Managing data based solely on vectors can be cumbersome and result in wasted resources when storing multiple metadata copies. Therefore, VQLite's design allows for multiple vectors per document while also allowing storage of metadata without relying on additional storage solutions such as MySQL or Redis.
+Commonly used vector similarity search engines (such as Milvus, Qdrant, Vearch) are managed by vector dimensions and operate on vectors. In contrast, VQLite processes data based on documents as dimensions. We found that in many cases, there is not a one-to-one relationship between documents and vectors but rather a one-to-many relationship where a document may have multiple vectors. Managing data based solely on vectors can be cumbersome and result in wasted resources when storing multiple metadata copies. Therefore, VQLite's design allows for multiple vectors per document while also allowing storage of metadata without relying on additional storage solutions such as MySQL or Redis.
 
 If you really want to use this project, understand the structure and design of VQLite, or if you want to make some modifications to VQLite to adapt it to your own needs, it is strongly recommended that you read  [Design.md](Design.md).
 
-Of course, the most important aspect is retrieval speed; therefore, we use Google's [ScaNN](https://github.com/google-research/google-research/tree/master/scann) at the core of our system since it may currently be the fastest public retrieval engine available.
+Of course, the most important aspect is retrieval speed; therefore, we use Google's [ScaNN](https://github.com/google-research/google-research/tree/master/scann) at the core of our system since it may currently be the fastest public vector similarity search method available.
 ~~In fact, we simply encapsulate ScaNN~~
 
 The following image comes from ScaNN.
