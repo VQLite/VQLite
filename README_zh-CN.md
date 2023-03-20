@@ -1,6 +1,6 @@
-# VQLite - Simple and Lightweight Vector Search Engine
+# VQLite - Simple and Lightweight Vector Search Engine based on Google ScaNN
 
-VQLite 是一个轻量简单的向量搜索引擎。VQLite 提供了一套简单的 RESTful API 用来构建向量搜索服务。
+VQLite 是一个基于 Google ScaNN 的轻量简单的向量搜索引擎。VQLite 提供了一套简单的 RESTful API 用来构建向量搜索服务。
 
 我们写这个项目的原因是目前没有适配我们需求的（可以见下面一段），而且我们觉得目前市面上的向量检索引擎都太重了，动不动就上个 Kubernetes 集群，加上多个副本, 对于很多项目来说实际上是资源的浪费和运维的负担。
 

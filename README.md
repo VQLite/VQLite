@@ -1,8 +1,8 @@
-# VQLite - Simple and Lightweight Vector Search Engine
+# VQLite - Simple and Lightweight Vector Search Engine based on Google ScaNN
 
 [中文点这里](README_zh-CN.md)
 
-VQLite is a lightweight and simple vector similarity search engine. VQLite provides a simple RESTful API for building vector similarity search services.
+VQLite is a lightweight and simple vector similarity search engine based on Google ScaNN. VQLite provides a simple RESTful API for building vector similarity search services.
 
 The reason we are creating this project is that there is currently no solution that meets our needs (as described in the following paragraph), and we feel that the vector search engines available on the market are too heavy, often requiring a Kubernetes cluster with multiple replicas. This can be a waste of resources and a burden for many projects.
 
