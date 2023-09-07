@@ -25,7 +25,7 @@ ENV https_proxy ""
 ENV all_proxy ""
 ENV GO111MODULE on
 ENV GOPROXY https://goproxy.cn
-RUN go build -o /go/bin/vqlite cmd/vqlite.go
+RUN go build -o /go/bin/vqlite cmd/main.go
 
 
 # OUTPUT
@@ -33,4 +33,5 @@ FROM debian:buster-slim
 WORKDIR /app
 COPY --from=BUILDER /usr/lib /usr/lib
 COPY --from=BUILDER /go/bin/vqlite /app/vqlite
-ENTRYPOINT ["/app/vqlite"]
+#CMD ["/app/vqlite run"]
+ENTRYPOINT ["/app/vqlite", "run"]

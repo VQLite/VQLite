@@ -15,7 +15,7 @@ type ServiceConfig struct {
 	Port                 int    `mapstructure:"port"`
 	RunMode              string `mapstructure:"runMode"`
 	DataPath             string `mapstructure:"dataPath"`
-	SegmentVectorMaxSize uint64 `mapstructure:"segmentVectorMaxSize"`
+	SegmentVectorMaxSize int64  `mapstructure:"segmentVectorMaxSize"`
 }
 
 type Config struct {

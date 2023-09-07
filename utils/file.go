@@ -141,11 +141,11 @@ func DirSize(path string) (float64, error) {
 	return sizeKB, err
 }
 
-func RemoveIndex(s []os.FileInfo, index int) []os.FileInfo {
+func RemoveIndex(s []os.DirEntry, index int) []os.DirEntry {
 	return append(s[:index], s[index+1:]...)
 }
 
-func FilterValidSegmentDirs(segmentsDirs []os.FileInfo) {
+func FilterValidSegmentDirs(segmentsDirs []os.DirEntry) {
 	for i := 0; i < len(segmentsDirs); i++ {
 		if !segmentsDirs[i].IsDir() {
 			RemoveIndex(segmentsDirs, i)
@@ -156,7 +156,7 @@ func FilterValidSegmentDirs(segmentsDirs []os.FileInfo) {
 		}
 	}
 }
-func SortFileNameAscend(segmentsDirs []os.FileInfo) {
+func SortFileNameAscend(segmentsDirs []os.DirEntry) {
 
 	sort.Slice(segmentsDirs, func(i, j int) bool {
 		pathA := segmentsDirs[i].Name()

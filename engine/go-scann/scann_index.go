@@ -10,11 +10,13 @@ import "C"
 import (
 	"fmt"
 	"github.com/rs/zerolog/log"
+	"sync"
 	"unsafe"
 	"vqlite/utils"
+	"vqlite/utils/conc"
 )
 
-type IndexStat struct {
+type IndexStatistics struct {
 	DatasetSize    int64  `json:"dataset_size"`
 	VidSize        int64  `json:"vid_size"`
 	IndexSize      int64  `json:"index_size"`
@@ -36,6 +38,7 @@ type ScaNNIndex struct {
 	Dim          int
 	IndexWorkDir string
 	IndexId      uint64
+	vdbCRwLock   sync.RWMutex
 }
 
 const (
@@ -49,7 +52,7 @@ const (
 	IndexStateUnknown = "INDEX_STATE_UNKNOWN"
 )
 
-var SearchableStatusSlice = []string{IndexStateReady, IndexStateAdd, IndexStateDump}
+var SearchableStateSlice = []string{IndexStateReady, IndexStateAdd, IndexStateDump}
 
 var CIndexStateMap = map[C.index_state_t]string{
 	C.index_state_t(C.INDEX_STATE_NONE):    IndexStateNone,
@@ -91,6 +94,7 @@ func NewScaNNIndex(indexWorkDir string, dimIn int, indexId uint64) (vdb *ScaNNIn
 		utils.CreateDirPath(indexWorkDir)
 	}
 	workDirC := C.CString(indexWorkDir)
+	defer C.free(unsafe.Pointer(workDirC))
 	// config
 	var vqliteConfig C.index_config_t
 	vqliteConfig.dim_ = C.uint32_t(dimIn)
@@ -101,7 +105,6 @@ func NewScaNNIndex(indexWorkDir string, dimIn int, indexId uint64) (vdb *ScaNNIn
 	vqliteConfig.hash_train_sample_rate_ = C.float(0.1)
 	// init index
 	vdbC := C.vqindex_init(workDirC, vqliteConfig)
-
 	if vdbC == nil {
 		err = fmt.Errorf("failed to create index")
 		return
@@ -114,20 +117,32 @@ func NewScaNNIndex(indexWorkDir string, dimIn int, indexId uint64) (vdb *ScaNNIn
 		IndexWorkDir: indexWorkDir,
 		IndexId:      indexId,
 	}
-	C.free(unsafe.Pointer(workDirC))
 
 	return
 }
 
-func (vdb *ScaNNIndex) Destroy() (err error) {
-	C.vqindex_release(vdb.vdbC)
+func (vdb *ScaNNIndex) Destroy() {
+	vdb.vdbCRwLock.Lock()
+	tempPtr := vdb.vdbC
 	vdb.vdbC = nil
+	vdb.vdbCRwLock.Unlock()
+
+	if tempPtr == nil {
+		return
+	}
+	C.vqindex_release(tempPtr)
 	log.Info().Msgf("Destroy VectoDB %+v", vdb)
 
-	return
 }
 
-func (vdb *ScaNNIndex) Search(xq []float32, k int, reorder int, nprobe int) ([][]VidScore, error) {
+func (vdb *ScaNNIndex) Search(xq []float32, k int, nprobe int, reorder int) ([][]VidScore, error) {
+	vdb.vdbCRwLock.RLock()
+	defer vdb.vdbCRwLock.RUnlock()
+
+	if vdb.vdbC == nil {
+		return nil, fmt.Errorf("index not initialized")
+	}
+
 	nq := len(xq) / vdb.Dim
 	if nq < 1 {
 		return nil, fmt.Errorf("invalid xq size")
@@ -138,7 +153,13 @@ func (vdb *ScaNNIndex) Search(xq []float32, k int, reorder int, nprobe int) ([][
 	searchParams.reorder_topk_ = C.uint32_t(reorder)
 	searchParams.nprobe_ = C.uint32_t(nprobe)
 	searchResult := make([]C.result_search_t, nq*k)
-	exeCode := C.vqindex_search(vdb.vdbC, (*C.float)(&xq[0]), C.int(len(xq)), (*C.result_search_t)(&searchResult[0]), searchParams)
+
+	exeCodeC, _ := conc.GetSQPool().Submit(func() (any, error) {
+		exeCode := C.vqindex_search(vdb.vdbC, (*C.float)(&xq[0]), C.int(len(xq)), (*C.result_search_t)(&searchResult[0]), searchParams)
+		return exeCode, nil
+	}).Await()
+	exeCode := exeCodeC.(C.ret_code_t)
+	//exeCode := C.vqindex_search(vdb.vdbC, (*C.float)(&xq[0]), C.int(len(xq)), (*C.result_search_t)(&searchResult[0]), searchParams)
 	if exeCode != 0 {
 		//log.Errorf("search failed")
 		log.Error().Msgf("search failed, exeCode: %v, msg: %s", exeCode, CRetCodeMap[exeCode])
@@ -162,6 +183,8 @@ func (vdb *ScaNNIndex) Search(xq []float32, k int, reorder int, nprobe int) ([][
 }
 
 func (vdb *ScaNNIndex) AddWithIDs(vectors [][]float32, vids []int64) bool {
+	vdb.vdbCRwLock.Lock()
+	defer vdb.vdbCRwLock.Unlock()
 
 	flattenedVectors := utils.FlattenFloat32Slice(vectors)
 
@@ -170,7 +193,13 @@ func (vdb *ScaNNIndex) AddWithIDs(vectors [][]float32, vids []int64) bool {
 		log.Error().Msgf("invalid length of vectors, want %v, have %v, nb %v, vdb.Dim %v ", nb*vdb.Dim, len(flattenedVectors), nb, vdb.Dim)
 		return false
 	}
-	exeCode := C.vqindex_add(vdb.vdbC, (*C.float)(&flattenedVectors[0]), C.uint64_t(nb*vdb.Dim), (*C.int64_t)(&vids[0]))
+	exeCodeC, _ := conc.GetDynamicPool().Submit(func() (any, error) {
+		exeCode := C.vqindex_add(vdb.vdbC, (*C.float)(&flattenedVectors[0]), C.uint64_t(nb*vdb.Dim), (*C.int64_t)(&vids[0]))
+		return exeCode, nil
+	}).Await()
+
+	exeCode := exeCodeC.(C.ret_code_t)
+	//exeCode := C.vqindex_add(vdb.vdbC, (*C.float)(&flattenedVectors[0]), C.uint64_t(nb*vdb.Dim), (*C.int64_t)(&vids[0]))
 	if exeCode != 0 {
 		log.Error().Msgf("add failed, exeCode: %v,  msg: %s", exeCode, CRetCodeMap[exeCode])
 		return false
@@ -179,16 +208,25 @@ func (vdb *ScaNNIndex) AddWithIDs(vectors [][]float32, vids []int64) bool {
 	return true
 }
 
-func (vdb *ScaNNIndex) Stat() IndexStat {
-	stats := C.vqindex_stats(vdb.vdbC)
-	datasetSize := int64(stats.datasets_size_)
-	vidSize := int64(stats.vid_size_)
-	indexSize := int64(stats.index_size_)
-	nlist := int32(stats.index_nlist_)
-	vecDim := int32(stats.dim_)
-	bruteThreshold := int64(stats.brute_threshold_)
-	isBruteIndication := int8(stats.is_brute_)
-	statusIndication := stats.current_status_
+func (vdb *ScaNNIndex) Statistics() IndexStatistics {
+	vdb.vdbCRwLock.RLock()
+	defer vdb.vdbCRwLock.RUnlock()
+	statisticsC, _ := conc.GetDynamicPool().Submit(func() (any, error) {
+		statisticsC := C.vqindex_stats(vdb.vdbC)
+		return statisticsC, nil
+	}).Await()
+
+	statistics := statisticsC.(C.index_stats_t)
+
+	//statistics := C.vqindex_stats(vdb.vdbC)
+	datasetSize := int64(statistics.datasets_size_)
+	vidSize := int64(statistics.vid_size_)
+	indexSize := int64(statistics.index_size_)
+	nlist := int32(statistics.index_nlist_)
+	vecDim := int32(statistics.dim_)
+	bruteThreshold := int64(statistics.brute_threshold_)
+	isBruteIndication := int8(statistics.is_brute_)
+	statusIndication := statistics.current_status_
 
 	var isBrute bool
 
@@ -205,7 +243,7 @@ func (vdb *ScaNNIndex) Stat() IndexStat {
 		status = IndexStateUnknown
 	}
 
-	stat := IndexStat{
+	stat := IndexStatistics{
 		DatasetSize:    datasetSize,
 		VidSize:        vidSize,
 		IndexSize:      indexSize,
@@ -218,24 +256,25 @@ func (vdb *ScaNNIndex) Stat() IndexStat {
 	return stat
 }
 
-func (vdb *ScaNNIndex) Train() error {
-	stat := vdb.Stat()
+func (vdb *ScaNNIndex) Train(numThreads int) error {
+	statistics := vdb.Statistics()
 	trainType := C.train_type_t(C.TRAIN_TYPE_DEFAULT) // 0 TRAIN_TYPE_DEFAULT, 1 TRAIN_TYPE_NEW, 2 TRAIN_TYPE_ADD
 	trainNlist := C.uint32_t(0)                       // 0 means use default value upNearestPower2(sqrt(n))
-	trainNthreads := C.int32_t(0)                     // 0 means enable all cores
+	trainNthreads := C.int32_t(numThreads)            // 0 means enable all cores
 
-	if stat.DatasetSize == 0 {
+	if statistics.DatasetSize == 0 {
 		errMsg := fmt.Errorf("train failed, dataset size is 0")
 		log.Error().Err(errMsg)
 		return errMsg
 	}
 
-	if stat.DatasetSize == stat.IndexSize {
+	if statistics.DatasetSize == statistics.IndexSize {
 		errMsg := fmt.Errorf("train failed, dataset size is equal to index size")
 		log.Error().Err(errMsg)
 		return errMsg
 	}
 
+	// train and dump index
 	exeCode := C.vqindex_train(vdb.vdbC, trainType, trainNlist, trainNthreads)
 	if exeCode != 0 {
 		errMsg := fmt.Errorf("train failed, exeCode: %v, msg: %s", exeCode, CRetCodeMap[exeCode])
@@ -244,15 +283,13 @@ func (vdb *ScaNNIndex) Train() error {
 	} else {
 		log.Info().Msgf("train success, exeCode: %v, msg: %s", exeCode, CRetCodeMap[exeCode])
 	}
-	// dump index to disk
-	err := vdb.Dump()
-	if err != nil {
-		return err
-	}
 	return nil
 }
 
 func (vdb *ScaNNIndex) Dump() error {
+	vdb.vdbCRwLock.RLock()
+	defer vdb.vdbCRwLock.RUnlock()
+
 	exeCode := C.vqindex_dump(vdb.vdbC)
 	if exeCode != 0 {
 		errMsg := fmt.Errorf("dump failed, exeCode: %v", exeCode)

@@ -17,7 +17,7 @@ RUN cp libs/*so* /usr/lib
 RUN ln -s  /usr/lib/libtensorflow_framework.so.2 /usr/lib/libtensorflow_framework.so
 
 WORKDIR /src/vqlite
-RUN go build -o /go/bin/vqlite cmd/vqlite.go
+RUN go build -o /go/bin/vqlite cmd/main.go
 
 
 # OUTPUT
@@ -27,4 +27,5 @@ COPY --from=BUILDER /usr/lib/libtensorflow_framework.so.2 /usr/lib/libtensorflow
 RUN ln -s  /usr/lib/libtensorflow_framework.so.2 /usr/lib/libtensorflow_framework.so
 COPY --from=BUILDER /usr/lib/libvqindex_api.so /usr/lib/libvqindex_api.so
 COPY --from=BUILDER /go/bin/vqlite /app/vqlite
-ENTRYPOINT ["/app/vqlite"]
+#CMD ["/app/vqlite run"]
+ENTRYPOINT ["/app/vqlite", "run"]

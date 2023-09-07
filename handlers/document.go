@@ -57,8 +57,7 @@ func DeleteDocument(c *gin.Context) {
 	}
 
 	vqid := doc.Vqid
-	err := core.DeleteDocument(collectionName, vqid)
-
+	deletedCount, err := core.DeleteDocument(collectionName, vqid)
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -66,6 +65,7 @@ func DeleteDocument(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
+		"count":  deletedCount,
 	})
 }
 
@@ -77,7 +77,7 @@ func UpdateDocumentMetadata(c *gin.Context) {
 		return
 	}
 
-	err := core.UpdateDocumentMetadata(collectionName, &doc)
+	updatedCount, err := core.UpdateDocumentMetadata(collectionName, &doc)
 
 	if err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -86,5 +86,36 @@ func UpdateDocumentMetadata(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
+		"count":  updatedCount,
 	})
+}
+
+func GetDocumentMetadata(c *gin.Context) {
+	collectionName := c.Param("target")
+	vqid := c.Query("vqid")
+	all := c.Query("all")
+
+	checkDuplicate := false
+	switch all {
+	case "true":
+		checkDuplicate = true
+	case "1":
+		checkDuplicate = true
+	case "True":
+		checkDuplicate = true
+	default:
+		checkDuplicate = false
+	}
+	metadataList, err := core.GetDocumentMetadata(collectionName, vqid, checkDuplicate)
+
+	if err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+		"data":   metadataList,
+	})
+
 }

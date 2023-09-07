@@ -101,6 +101,10 @@ ret_code_t vqindex_dump(void* vql_handler);
 // speed. num_leaves_to_search should be tuned based on recall target.
 ret_code_t vqindex_train(
     void* vql_handler, train_type_t train_type, uint32_t nlist, int32_t nthreads);
+// use process to train
+ret_code_t vqindex_train_process(
+    void* vql_handler, train_type_t train_type, uint32_t nlist, int32_t nthreads);
+
 
 // len: number of datasets float, <npoint = dim_ / len>, <len % dim_ == 0>.
 // only add to datasets, not index.

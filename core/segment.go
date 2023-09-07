@@ -1,28 +1,105 @@
 package core
 
+import "C"
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/rs/zerolog/log"
-	"sync"
-	"sync/atomic"
+	"go.uber.org/atomic"
+	"golang.org/x/sys/unix"
+	"os"
+	"os/exec"
+	"strconv"
+	"syscall"
 	scann "vqlite/engine/go-scann"
 	"vqlite/utils"
 )
 
+// SegmentConfig segment config
+type SegmentConfig struct {
+	SegmentId      uint64
+	SegmentWorkDir string
+	Dim            int
+}
+
+// SegmentIndex segment index
+type SegmentIndex struct {
+	VIndexC     *scann.ScaNNIndex
+	Sealed      bool
+	hasNewIndex atomic.Bool
+	isTraining  atomic.Bool
+}
+
 type Segment struct {
-	SegmentId       uint64
-	Sealed          bool
-	SegmentWorkDir  string
-	Dim             int
-	SegmentMetadata []*Metadata
-	VIndexC         *scann.ScaNNIndex
-	rwLock          sync.RWMutex
-	HasNewIndex     bool
-	VectorCounter   uint64
+	SegmentConfig   SegmentConfig
+	SegmentIndex    SegmentIndex
+	SegmentMetadata SegmentMetadata
+}
+
+const (
+	TrainSuccess               = 0
+	SegmentConfigFileNotExists = -1
+	NewSegmentErr              = -2
+	SegmentConfigFileLoadErr   = -3
+	TrainSegmentErr            = -4
+	DumpSegmentErr             = -5
+)
+
+//var RetMsg map[int]string = map[int]string{
+//	TrainSuccess:               "TrainSuccess",
+//	SegmentConfigFileNotExists: "SegmentConfigFileNotExists",
+//	NewSegmentErr:              "NewSegmentErr",
+//	SegmentConfigFileLoadErr:   "SegmentConfigFileLoadErr",
+//	TrainSegmentErr:            "TrainSegmentErr",
+//	DumpSegmentErr:             "DumpSegmentErr",
+//}
+
+func TrainSegmentByCmd(segmentWorkDir string, numThreads int) int {
+	// new Segment
+	fmt.Println("segmentWorkDir:", segmentWorkDir)
+	fmt.Println("numThreads:", numThreads)
+	segmentConfigSerializeFilename := utils.Join(segmentWorkDir, "config.gob")
+	isExist := utils.Exists(segmentConfigSerializeFilename)
+	if !isExist {
+		log.Error().Msgf("segment config file not exist:%v", segmentConfigSerializeFilename)
+		return SegmentConfigFileNotExists
+	}
+
+	seg, err := NewSegment(0, segmentWorkDir, 0)
+
+	if err != nil {
+		log.Error().Err(err).Msg("new segment error")
+		return NewSegmentErr
+	}
+
+	err = utils.Load(&seg.SegmentConfig, segmentConfigSerializeFilename)
+	if err != nil {
+		log.Error().Err(err).Msg("load segment config error")
+		return SegmentConfigFileLoadErr
+	}
+	seg.SegmentConfig.SegmentWorkDir = segmentWorkDir
+
+	seg.LoadIndex()
+
+	err = seg.SegmentIndex.VIndexC.Train(numThreads) // train index and dump index
+
+	if err != nil {
+		log.Error().Err(err).Msg("train segment index error")
+		return TrainSegmentErr
+	}
+	err = seg.DumpIndex()
+	if err != nil {
+		log.Error().Err(err).Msg("dump segment index error")
+		return DumpSegmentErr
+	}
+
+	log.Info().Msg("train segment success")
+	return TrainSuccess
+
 }
 
 func NewSegment(segmentId uint64, segmentWorkDir string, dim int) (*Segment, error) {
-	fmt.Println("NewSegment", segmentId, segmentWorkDir, dim)
 	var vIndex *scann.ScaNNIndex
 	var err error
 	if dim > 0 {
@@ -32,35 +109,40 @@ func NewSegment(segmentId uint64, segmentWorkDir string, dim int) (*Segment, err
 			return nil, err
 		}
 	}
-	newSegment := &Segment{
-		SegmentId:      segmentId,
-		Sealed:         false,
-		VIndexC:        vIndex,
-		SegmentWorkDir: segmentWorkDir,
-		Dim:            dim,
-		HasNewIndex:    false,
+	segment := &Segment{
+		SegmentConfig: SegmentConfig{
+			SegmentId:      segmentId,
+			SegmentWorkDir: segmentWorkDir,
+			Dim:            dim,
+		},
+		SegmentIndex: SegmentIndex{
+			VIndexC:     vIndex,
+			Sealed:      false,
+			hasNewIndex: *atomic.NewBool(false),
+		},
+		SegmentMetadata: NewSegmentMetadata(),
 	}
-	return newSegment, nil
+	log.Info().Msgf("NewSegment segmentId: %v, segmentWorkDir: %v, dim: %v", segmentId, segmentWorkDir, dim)
+	return segment, nil
 }
 
 func (s *Segment) Search(queryVecs []float32, opt QueryOpt) ([][]scann.VidScore, error) {
-	return s.VIndexC.Search(queryVecs, opt.TopK, opt.NProbe, opt.Reorder)
+	return s.SegmentIndex.VIndexC.Search(queryVecs, opt.TopK, opt.NProbe, opt.Reorder)
 }
 
 func (s *Segment) BatchAddDocuments(documents *BatchAddDocumentsRequest) {
 
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
-
 	vectorsIds := make([]int64, 0)
 	vectors := make([][]float32, 0)
-
 	for _, document := range documents.Documents {
-		documentId := int64(len(s.SegmentMetadata))
-		s.SegmentMetadata = append(s.SegmentMetadata, &Metadata{
+		documentId := int64(s.SegmentMetadata.Size())
+		serializedMetadata, _ := json.Marshal(document.Metadata)
+
+		s.SegmentMetadata.Add(&Metadata{
 			Vqid: document.Vqid,
-			Data: document.Metadata,
+			Data: serializedMetadata,
 		})
+
 		if len(document.VectorsTag) == 0 {
 			for i := 0; i < len(document.Vectors); i++ {
 				vectorId, err := utils.EncodeVectorId(documentId, int64(i))
@@ -82,22 +164,21 @@ func (s *Segment) BatchAddDocuments(documents *BatchAddDocumentsRequest) {
 				vectors = append(vectors, document.Vectors[i])
 			}
 		}
-
 	}
-	atomic.AddUint64(&s.VectorCounter, uint64(len(vectors)))
-	s.VIndexC.AddWithIDs(vectors, vectorsIds)
+	s.SegmentIndex.VIndexC.AddWithIDs(vectors, vectorsIds)
 
 }
 
 func (s *Segment) AddDocument(document *AddDocumentRequest) {
-	s.rwLock.Lock()
-	defer s.rwLock.Unlock()
+
 	// global increment doc id
-	documentId := int64(len(s.SegmentMetadata))
+	documentId := int64(s.SegmentMetadata.Size())
+
+	serializedMetadata, _ := json.Marshal(document.Metadata)
 	// add metadata
-	s.SegmentMetadata = append(s.SegmentMetadata, &Metadata{
+	s.SegmentMetadata.Add(&Metadata{
 		Vqid: document.Vqid,
-		Data: document.Metadata,
+		Data: serializedMetadata,
 	})
 
 	count := len(document.Vectors)
@@ -122,73 +203,116 @@ func (s *Segment) AddDocument(document *AddDocumentRequest) {
 			vectorsIds = append(vectorsIds, vectorId)
 		}
 	}
-	atomic.AddUint64(&s.VectorCounter, uint64(count))
-	s.VIndexC.AddWithIDs(document.Vectors, vectorsIds)
+
+	s.SegmentIndex.VIndexC.AddWithIDs(document.Vectors, vectorsIds)
 }
 
 func (s *Segment) DeleteDocument(vqid string) bool {
-	for i := 0; i < len(s.SegmentMetadata); i++ {
-		if s.SegmentMetadata[i].Vqid == vqid {
-			s.SegmentMetadata[i] = nil
-			return true
-		}
-	}
-	return false
+	return s.SegmentMetadata.DeleteByVqid(vqid)
 }
 
-func (s *Segment) UpdateDocumentMetadata(document *UpdateDocumentMetadataRequest) bool {
-	for i := 0; i < len(s.SegmentMetadata); i++ {
-		if s.SegmentMetadata[i].Vqid == document.Vqid {
-			s.SegmentMetadata[i].Data = document.Metadata
-			return true
-		}
-	}
-	return false
+func (s *Segment) UpdateDocumentMetadata(document *UpdateDocumentMetadataRequest) int {
+	return s.SegmentMetadata.Update(document.Vqid, document.Metadata)
 }
 
-func (s *Segment) Seal() {
-	s.Sealed = true
+func (s *Segment) GetDocumentMetadata(vqid string, checkDuplicate bool) []*Metadata {
+	var docMetadataList []*Metadata
+	for i := 0; i < s.SegmentMetadata.Size(); i++ {
+		if s.SegmentMetadata.GetByid(i) == nil {
+			continue
+		}
+		if s.SegmentMetadata.GetByid(i).Vqid == vqid {
+			docMetadataList = append(docMetadataList, s.SegmentMetadata.GetByid(i))
+			if !checkDuplicate {
+				break
+			}
+		}
+
+	}
+
+	return docMetadataList
+}
+
+func (s *Segment) SealIndex() {
+	s.SegmentIndex.Sealed = true
 }
 
 func (s *Segment) IsSearchable() bool {
-	indexStat := s.VIndexC.Stat()
-	// INDEX >0
+
+	if s.SegmentIndex.VIndexC == nil {
+		return false
+	}
+
+	indexStatistics := s.SegmentIndex.VIndexC.Statistics()
+
+	// INDEX > 0
 	// Status in [IndexStateReady, IndexStateAdd, IndexStateDump]
-	if indexStat.IndexSize > 0 {
-		return utils.SliceContains(scann.SearchableStatusSlice, indexStat.Status)
+	if indexStatistics.IndexSize > 0 {
+		return utils.SliceContains(scann.SearchableStateSlice, indexStatistics.Status)
 	}
 	return false
 }
 
-func (s *Segment) Stat() SegmentStat {
-	indexStat := s.VIndexC.Stat()
-	return SegmentStat{
-		SegmentId:   s.SegmentId,
-		Sealed:      s.Sealed,
-		Dim:         s.Dim,
-		IndexStat:   indexStat,
-		VectorCount: s.VectorCounter,
+func (s *Segment) Statistics() (*SegmentStatistics, error) {
+	if s.SegmentIndex.VIndexC == nil {
+		return nil, errors.New("index is nil")
 	}
+	indexStatistics := s.SegmentIndex.VIndexC.Statistics()
+	vectorCount := indexStatistics.VidSize
+	return &SegmentStatistics{
+		SegmentId:       s.SegmentConfig.SegmentId,
+		Sealed:          s.SegmentIndex.Sealed,
+		Dim:             s.SegmentConfig.Dim,
+		IndexStatistics: indexStatistics,
+		VectorCount:     vectorCount,
+		DocCount:        int64(s.SegmentMetadata.Size()),
+	}, nil
 }
 
-func (s *Segment) Train() {
+func (s *Segment) Train(numThreads int) error {
+	if !s.SegmentIndex.isTraining.CompareAndSwap(false, true) {
+		return errors.New("segment is training")
+	}
+
+	s.DumpConfig()   // dump segment config
 	s.DumpMetadata() // dump segment metadata and raw data
-	s.VIndexC.Train()
-	s.DumpIndex() // dump index
+
+	cmd := &exec.Cmd{
+		Path: "/proc/self/exe",
+		Args: []string{os.Args[0] + "_train", "train", "-segmentWorkDir", s.SegmentConfig.SegmentWorkDir, "-numThreads", strconv.Itoa(numThreads)},
+		SysProcAttr: &syscall.SysProcAttr{
+			Pdeathsig: unix.SIGTERM,
+		},
+	}
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Error().Err(err).Msg("failed to start command")
+	}
+	if err := cmd.Wait(); err != nil {
+		log.Error().Err(err).Msg("failed to wait command")
+
+		exitError, ok := err.(*exec.ExitError)
+		if !ok || exitError.ExitCode() != TrainSuccess {
+			return err
+		}
+	}
+	s.SegmentIndex.isTraining.Store(false)
+	s.SetHasNewIndex()
+	s.LoadIndex()
+	return nil
 }
 
 func (s *Segment) DropIndex() error {
-	err := s.VIndexC.Destroy()
-	if err != nil {
-		log.Error().Err(err).Msg("drop index error")
-		return err
-	}
+	s.SegmentIndex.VIndexC.Destroy()
+	log.Info().Msgf("drop index success, segmentId:%v", s.SegmentConfig.SegmentId)
 	return nil
 }
 
 func (s *Segment) Drop() error {
 	// delete all metadata
-	err := utils.DeleteDir(s.SegmentWorkDir)
+	err := utils.DeleteDir(s.SegmentConfig.SegmentWorkDir)
 	if err != nil {
 		return err
 	}
@@ -200,66 +324,148 @@ func (s *Segment) Drop() error {
 	return nil
 }
 
-func (s *Segment) DumpMetadata() error {
+func (s *Segment) DumpConfig() error {
+	log.Info().Msgf("dump segment config, segmentId:%v", s.SegmentConfig.SegmentId)
+
 	// create segment dir
-	if !utils.IsDir(s.SegmentWorkDir) {
-		utils.CreateDirPath(s.SegmentWorkDir)
+	if !utils.IsDir(s.SegmentConfig.SegmentWorkDir) {
+		utils.CreateDirPath(s.SegmentConfig.SegmentWorkDir)
 	}
-	segmentSerializeFilename := utils.Join(s.SegmentWorkDir, "metadata.gob")
-	err := utils.Dump(s, segmentSerializeFilename)
+
+	segmentConfigSerializeFilename := utils.Join(s.SegmentConfig.SegmentWorkDir, "config.gob")
+	err := utils.Dump(s.SegmentConfig, segmentConfigSerializeFilename)
+	if err != nil {
+		log.Error().Err(err).Msg("dump segment config error")
+	}
+	return err
+
+}
+
+func (s *Segment) DumpMetadata() error {
+	log.Info().Msgf("dump segment metadata, segmentId:%v", s.SegmentConfig.SegmentId)
+
+	// create segment dir
+	if !utils.IsDir(s.SegmentConfig.SegmentWorkDir) {
+		utils.CreateDirPath(s.SegmentConfig.SegmentWorkDir)
+	}
+	segmentMetadataSerializeFilename := utils.Join(s.SegmentConfig.SegmentWorkDir, "metadata.gob")
+	err := utils.Dump(s.SegmentMetadata.metadata, segmentMetadataSerializeFilename)
 	if err != nil {
 		log.Error().Err(err).Msg("dump segment metadata error")
 	}
 	return err
 }
+
 func (s *Segment) DumpIndex() error {
+	log.Info().Msgf("dump segment index, segmentId:%v", s.SegmentConfig.SegmentId)
+
 	// create segment dir
-	if !utils.IsDir(s.SegmentWorkDir) {
-		utils.CreateDirPath(s.SegmentWorkDir)
+	if !utils.IsDir(s.SegmentConfig.SegmentWorkDir) {
+		utils.CreateDirPath(s.SegmentConfig.SegmentWorkDir)
 	}
-	err := s.VIndexC.Dump()
+	err := s.SegmentIndex.VIndexC.Dump()
 	return err
 }
 
 func (s *Segment) Dump() {
-	err := s.DumpMetadata()
+	var err error
+
+	// dump segment metadata
+	err = s.DumpMetadata()
 	if err != nil {
+		log.Error().Err(err).Msg("dump segment metadata error")
 		return
 	}
 	log.Info().Msg("dump segment metadata success")
-	s.DumpIndex()
+
+	// dump segment config
+	err = s.DumpConfig()
+	if err != nil {
+		log.Error().Err(err).Msg("dump segment config error")
+		return
+	}
+	log.Info().Msg("dump segment config success")
+
+	// dump segment index
+	//err = s.DumpIndex()
+	//if err != nil {
+	//	log.Error().Err(err).Msg("dump segment index error")
+	//	return
+	//}
+	//log.Info().Msg("dump segment index success")
+}
+
+func (s *Segment) LoadConfig() {
+	log.Info().Msgf("load segment config, segmentId:%v", s.SegmentConfig.SegmentId)
+
+	segmentConfigSerializeFilename := utils.Join(s.SegmentConfig.SegmentWorkDir, "config.gob")
+	isExist := utils.Exists(segmentConfigSerializeFilename)
+	if !isExist {
+		log.Error().Msgf("segment config file not exist:%v", segmentConfigSerializeFilename)
+		return
+	}
+	err := utils.Load(&s.SegmentConfig, segmentConfigSerializeFilename)
+	if err != nil {
+		log.Error().Err(err).Msg("load segment config error")
+	}
+}
+
+func (s *Segment) LoadMetadata() {
+	log.Info().Msgf("load segment metadata, segmentId:%v", s.SegmentConfig.SegmentId)
+	segmentMetadataSerializeFilename := utils.Join(s.SegmentConfig.SegmentWorkDir, "metadata.gob")
+	if !utils.Exists(segmentMetadataSerializeFilename) {
+		log.Error().Msgf("segment metadata file not exist:%v", segmentMetadataSerializeFilename)
+		return
+	}
+	segmentWorkDirTemp := s.SegmentConfig.SegmentWorkDir
+
+	err := utils.Load(&s.SegmentMetadata.metadata, segmentMetadataSerializeFilename)
+
+	if err != nil {
+		log.Error().Err(err).Msg("load segment metadata error")
+	}
+	// serialize will load SegmentWorkDir, but it may be not real dir, so we need to reset it
+	s.SegmentConfig.SegmentWorkDir = segmentWorkDirTemp
 }
 
 func (s *Segment) LoadIndex() {
-	s.VIndexC = nil
-	var vIndex *scann.ScaNNIndex
-	vIndex, err := scann.NewScaNNIndex(s.SegmentWorkDir, s.Dim, s.SegmentId)
-	if err != nil {
-		log.Error().Err(err).Msg("create index error")
-	}
-	s.VIndexC = vIndex
-	if err != nil {
-		log.Error().Err(err).Msg("load segment error")
-	}
-}
-func (s *Segment) LoadMetadata() {
-	segmentSerializeFilename := utils.Join(s.SegmentWorkDir, "metadata.gob")
-	isExist := utils.Exists(segmentSerializeFilename)
-	segmentWorkDirTemp := s.SegmentWorkDir
-	if !isExist {
-		log.Error().Msgf("segment metadata file not exist:%v", segmentSerializeFilename)
-		return
-	}
-	err := utils.Load(s, segmentSerializeFilename)
+	if s.SegmentIndex.VIndexC == nil {
+		log.Info().Msgf("load segment index, new index ,segmentId:%v", s.SegmentConfig.SegmentId)
 
-	if err != nil {
-		log.Error().Err(err).Msg("load segment error")
+		newIndex, err := scann.NewScaNNIndex(s.SegmentConfig.SegmentWorkDir, s.SegmentConfig.Dim, s.SegmentConfig.SegmentId)
+		if err != nil {
+			log.Error().Err(err).Msg("create index error")
+		}
+		s.SegmentIndex.VIndexC = newIndex
+
+	} else if s.SegmentIndex.VIndexC != nil && s.HasNewIndex() {
+		log.Info().Msgf("load segment index, replace index ,segmentId:%v", s.SegmentConfig.SegmentId)
+
+		// load new index
+		newIndex, err := scann.NewScaNNIndex(s.SegmentConfig.SegmentWorkDir, s.SegmentConfig.Dim, s.SegmentConfig.SegmentId)
+		if err != nil {
+			log.Error().Err(err).Msg("create index error")
+		}
+		// destroy replace old index and replace it
+		oldIndexC := s.SegmentIndex.VIndexC
+		s.SegmentIndex.VIndexC = newIndex
+		oldIndexC.Destroy()
+		s.SetNoNewIndex()
 	}
-	// serialize will load SegmentWorkDir, but it may be not real dir, so we need to reset it
-	s.SegmentWorkDir = segmentWorkDirTemp
 }
 
 func (s *Segment) Load() {
-	s.LoadMetadata()
+	s.LoadConfig()
 	s.LoadIndex()
+	s.LoadMetadata()
+}
+
+func (s *Segment) SetHasNewIndex() {
+	s.SegmentIndex.hasNewIndex.Store(true)
+}
+func (s *Segment) SetNoNewIndex() {
+	s.SegmentIndex.hasNewIndex.Store(false)
+}
+func (s *Segment) HasNewIndex() bool {
+	return s.SegmentIndex.hasNewIndex.Load()
 }

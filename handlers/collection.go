@@ -14,11 +14,11 @@ func GetHealth(c *gin.Context) {
 	})
 }
 
-func VQLiteStat(c *gin.Context) {
-	vqliteStat := core.Stat()
+func VQLiteStatistics(c *gin.Context) {
+	vqliteStatistics := core.Statistics()
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
-		"data":   vqliteStat,
+		"data":   vqliteStatistics,
 	})
 }
 
@@ -42,7 +42,7 @@ func CreateCollection(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
-		"data":   col.Stat(),
+		"data":   col.Statistics(),
 	})
 
 }
@@ -77,8 +77,14 @@ func SearchCollection(c *gin.Context) {
 }
 func TrainCollection(c *gin.Context) {
 	collectionName := c.Param("target")
+	var trainReq core.TrainRequest
 
-	if err := core.TrainCollection(collectionName); err != nil {
+	if err := c.BindJSON(&trainReq); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if err := core.TrainCollection(collectionName, trainReq.Threads, trainReq.IgnoreCheck); err != nil {
 		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -99,8 +105,31 @@ func DumpCollection(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"status": "ok",
 	})
-
 }
+
+func DumpCollectionMetadata(c *gin.Context) {
+	collectionName := c.Param("target")
+
+	if err := core.DumpCollectionMetadata(collectionName); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+	})
+}
+func DumpCollectionIndex(c *gin.Context) {
+	collectionName := c.Param("target")
+
+	if err := core.DumpCollectionIndex(collectionName); err != nil {
+		c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status": "ok",
+	})
+}
+
 func LoadCollection(c *gin.Context) {
 	collectionName := c.Param("target")
 
