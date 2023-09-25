@@ -78,9 +78,6 @@ func NewCollection(name string, dim int) (*Collection, error) {
 //
 // Returns the newly created segment or nil if there was an error.
 func (c *Collection) AddNewSegment() *Segment {
-	c.lock.Lock()
-	defer c.lock.Unlock()
-
 	segmentWorkDir := utils.Join(c.CollectionWorkDir, fmt.Sprintf("segment_%d", c.MaxSegmentId))
 	newSegment, err := NewSegment(c.MaxSegmentId, segmentWorkDir, c.Dim)
 	if err != nil {
