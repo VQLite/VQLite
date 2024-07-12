@@ -280,7 +280,7 @@ func (c *Collection) DeleteDocument(vqid string) int {
 	for _, seg := range c.Segments {
 		deleted := seg.DeleteDocument(vqid)
 		if deleted {
-			deletedCount += 0
+			deletedCount += 1
 		}
 	}
 	return deletedCount
